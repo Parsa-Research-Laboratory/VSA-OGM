@@ -14,7 +14,10 @@ logging:
   verbose: False
   log_interval: 25
 mapping:
-  axis_resolution: 0.2
+  # Table 6 reports VSA-OGM on Intel Map with a space delta (decoded OGM
+  # resolution) of 0.1 m/cell, and the multi-agent Intel configs use 0.1.
+  # This was 0.2, which drops test AUC from 0.943 to 0.907.
+  axis_resolution: 0.1
   data_filter: "passthrough"
   data_filter_args: {}
   decoding:

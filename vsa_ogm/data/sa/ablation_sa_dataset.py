@@ -47,7 +47,11 @@ class AblationSingleAgentDataset(BaseSingleAgentDataset):
         ))
 
         # shuffle the data
-        shuffled_indices = np.random.permutation(all_points.shape[0])
+        # Seeded from the config so the chunking is reproducible across runs;
+        # this used to draw from global numpy state, so every run produced a
+        # different partition of points into scans.
+        rng = np.random.default_rng(config.mapping.seed)
+        shuffled_indices = rng.permutation(all_points.shape[0])
         all_points = all_points[shuffled_indices]
         all_labels = all_labels[shuffled_indices]
 

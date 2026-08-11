@@ -24,7 +24,7 @@ def sum_nested_dict(d):
     return total
 
 def make_good_unitary(num_dims: int, device: str,
-        eps: float = 1e-3) -> torch.tensor:
+        eps: float = 1e-3, rng: np.random.Generator = None) -> torch.tensor:
     """
     create a hyperdimensional vector of unitary length phasers to build the
     quasi-orthogonal algebraic space
@@ -34,15 +34,22 @@ def make_good_unitary(num_dims: int, device: str,
     1) num_dims (int): the dimensionality of the vsa
     2) device (str): where to store the tensor
     3) eps (float): the allowable variability in the phase of each phasor
+    4) rng (np.random.Generator): the generator used to draw the phasor signs.
+        Must be seeded identically across every agent whose memory vectors
+        will later be fused, otherwise the agents encode into different
+        algebraic spaces and their memories cannot be summed.
 
     Returns:
     --------
     1) v (torch.tensor): a one dimensional tensor of unitary phasors
     """
 
+    if rng is None:
+        rng = np.random.default_rng()
+
     a = torch.rand((num_dims - 1) // 2)
-    sign = np.random.choice((-1, +1), len(a))
-    
+    sign = rng.choice((-1, +1), len(a))
+
     sign = torch.from_numpy(sign).to(device)
     a = a.to(device)
 
@@ -73,7 +80,6 @@ def make_good_unitary(num_dims: int, device: str,
 
 @torch.jit.script
 def compute_local_entropy(tensor: torch.Tensor, radius: int) -> torch.Tensor:
-    print(tensor.shape)
     tensor = tensor.clamp(0, 1)
 
     bins = 256
@@ -108,7 +114,8 @@ class SSPGenerator:
     A Utility class to generate arbitrary numbers of hyper-vectors with the
     same shape so they can be binded and bundled together
     """
-    def __init__(self, dimensionality: int, device: str, length_scale: float = 1) -> None:
+    def __init__(self, dimensionality: int, device: str, length_scale: float = 1,
+                 seed: int = 0) -> None:
         """
         Init SSP Generator
 
@@ -119,6 +126,9 @@ class SSPGenerator:
         2) device (str): a string representing the device to load, store,
             and operate
         3) length_scale (float): adjust the width of the kernel
+        4) seed (int): seeds both the torch and numpy draws so that the same
+            axis vectors are produced on every call, in every process. Agents
+            whose memory vectors will be fused must share this seed.
 
         Returns:
         --------
@@ -127,6 +137,7 @@ class SSPGenerator:
         self.dimensionality: int = dimensionality
         self.device: str = device
         self.length_scale: float = length_scale
+        self.seed: int = seed
 
     def generate(self, n: int) -> torch.tensor:
         """
@@ -141,13 +152,15 @@ class SSPGenerator:
         1) ssp_matrix (torch.tensor): a matrix of random hypervectors of
             shape [n, self.dimensionality]
         """
-        torch.manual_seed(0)
+        torch.manual_seed(self.seed)
+        rng = np.random.default_rng(self.seed)
         ssp_matrix = torch.zeros((n, self.dimensionality), device=self.device)
 
         for i in range(n):
             ssp_matrix[i, :] = make_good_unitary(
                 num_dims=self.dimensionality,
-                device=self.device
+                device=self.device,
+                rng=rng
             )
 
         return ssp_matrix
@@ -162,11 +175,15 @@ class SA_VSA_OGM(BaseSingleAgentMapper):
     ogm: np.ndarray = None
     pairwaise_distance = nn.PairwiseDistance()
 
-    quadrant_axis_bounds: Tuple[Tuple[torch.tensor, torch.tensor]] = []
-    quadrant_centers: Tuple[torch.tensor] = []
+    # NOTE: these are annotations only. They must NOT be given mutable
+    # defaults here -- build_quadrant_level() appends to them, so a shared
+    # class-level list would be mutated by every mapper in the process and
+    # every agent would silently read agent 0's geometry from index [0].
+    quadrant_axis_bounds: List[Tuple[torch.tensor, torch.tensor]]
+    quadrant_centers: List[torch.tensor]
+    xy_axis_linspace: Tuple[torch.tensor, torch.tensor]
     occupied_quadrant_memory_vectors: torch.tensor = None
     empty_quadrant_memory_vectors: torch.tensor = None
-    xy_axis_linspace: tuple[torch.tensor] = []
     xy_axis_vectors: torch.tensor = None
     xy_axis_matrix: torch.tensor = None
     xy_axis_global_heatmap: torch.tensor = None
@@ -201,9 +218,6 @@ class SA_VSA_OGM(BaseSingleAgentMapper):
         self.decoding_disk_radii_2: int = config.mapping.decoding.disk_radii_2
         self.device: str = config.mapping.device
         self.num_tiles: int = config.mapping.num_tiles
-
-        print(f"Num Tiles: {self.num_tiles}")
-
         self.seed: int = config.mapping.seed
         self.vector_dimensionality: int = config.mapping.vector_dimensionality
         self.vector_length_scale: float = config.mapping.vector_length_scale
@@ -235,8 +249,13 @@ class SA_VSA_OGM(BaseSingleAgentMapper):
         self.ssp_generator = SSPGenerator(
             dimensionality=self.vector_dimensionality,
             device=self.device,
-            length_scale=self.vector_length_scale
+            length_scale=self.vector_length_scale,
+            seed=self.seed
         )
+
+        # per-instance geometry containers (see the note on the class body)
+        self.quadrant_axis_bounds: List[Tuple[torch.tensor, torch.tensor]] = []
+        self.quadrant_centers: List[torch.tensor] = []
 
         self.build_quadrant_level(0, self.num_tiles)
         self._build_quadrant_indices()
@@ -351,7 +370,8 @@ class SA_VSA_OGM(BaseSingleAgentMapper):
         self.ogm = ogm.cpu().numpy()
         self.num_observations += 1
 
-        print(json.dumps(fit_metrics, indent=4))
+        if self.verbose:
+            print(json.dumps(fit_metrics, indent=4))
 
         return fit_metrics, intermediate_maps
     
@@ -776,7 +796,6 @@ class SA_VSA_OGM(BaseSingleAgentMapper):
             decoding_metrics["decoding_time"] = decoding_start.elapsed_time(
                 decoding_end
             )
-            print(decoding_metrics["decoding_time"])
         else:
             decoding_end = time.time()
             decoding_metrics["decoding_time"] = decoding_end - decoding_start
@@ -1105,7 +1124,6 @@ class SA_VSA_OGM(BaseSingleAgentMapper):
             hm_decoding_start = time.time()
 
         if self.num_tiles > 1:
-            print(f"result shape before reshape: {result.shape}")
             result = result.view(self.num_tiles, self.num_tiles, self.quadrant_indices_y[1], self.quadrant_indices_x[1])
             result = result.permute(1, 2, 0, 3)
             result = result.reshape(self.num_tiles * self.quadrant_indices_y[1], self.num_tiles * self.quadrant_indices_x[1])
@@ -1115,9 +1133,6 @@ class SA_VSA_OGM(BaseSingleAgentMapper):
         temp_xy_axis_heatmap = result
 
         temp_xy_axis_heatmap = torch.nan_to_num(temp_xy_axis_heatmap)
-        print(f"Max value in heatmap: {torch.max(temp_xy_axis_heatmap)}")
-        print(f"Min value in heatmap: {torch.min(temp_xy_axis_heatmap)}")
-        print(f"Shape of heatmap: {temp_xy_axis_heatmap.shape}")
         if occupied:
             self.xy_axis_occupied_heatmap = temp_xy_axis_heatmap
         else:
@@ -1533,11 +1548,6 @@ class SA_VSA_OGM(BaseSingleAgentMapper):
 
         x_power_matrix = x_powers.repeat(self.vector_dimensionality, 1).T
         y_power_matrix = y_powers.repeat(self.vector_dimensionality, 1).T
-
-        print(x_axis_fd_matrix.shape)
-        print(y_axis_fd_matrix.shape)
-        print(x_power_matrix.shape)
-        print(y_power_matrix.shape)
 
         x_axis_fd_matrix = x_axis_fd_matrix ** x_power_matrix
         y_axis_fd_matrix = y_axis_fd_matrix ** y_power_matrix

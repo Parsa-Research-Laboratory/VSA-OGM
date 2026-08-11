@@ -16,10 +16,12 @@ class SingleAgentMappingManager:
     TODO Finish Documentation
     """
 
-    all_X_train: List[np.ndarray] = []
-    all_y_train: List[np.ndarray] = []
-    all_X_test: List[np.ndarray] = []
-    all_y_test: List[np.ndarray] = []
+    # annotations only -- these accumulate per run, so a shared class-level
+    # list would leak one manager's data into the next manager's metrics.
+    all_X_train: List[np.ndarray]
+    all_y_train: List[np.ndarray]
+    all_X_test: List[np.ndarray]
+    all_y_test: List[np.ndarray]
     mapper: BaseSingleAgentMapper = None
 
     def __init__(self, config: DictConfig, loggers: List[BaseLogger],
@@ -48,6 +50,11 @@ class SingleAgentMappingManager:
             
         self.plotting_flags: DictConfig = config.mapping_manager.plotting_flags
         self.saving_flags: DictConfig = config.mapping_manager.saving_flags
+
+        self.all_X_train: List[np.ndarray] = []
+        self.all_y_train: List[np.ndarray] = []
+        self.all_X_test: List[np.ndarray] = []
+        self.all_y_test: List[np.ndarray] = []
 
         self._initialize_mapper()
 

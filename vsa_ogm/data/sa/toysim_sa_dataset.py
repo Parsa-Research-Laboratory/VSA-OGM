@@ -48,7 +48,10 @@ class ToySimSingleAgentDataset(BaseSingleAgentDataset):
         Returns:
             int: The length of the dataset.
         """
-        return self.step_limit
+        # NOTE: this used to return self.step_limit (len - 1), which made the
+        # final scan unreachable. The dataset has 90 scans, matching Table 1
+        # of the paper; returning step_limit silently used only 89 of them.
+        return len(self.files)
 
     def __getitem__(self, idx: int) -> Tuple:
         """

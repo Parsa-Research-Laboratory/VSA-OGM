@@ -48,7 +48,10 @@ class IntelSingleAgentDataset(BaseSingleAgentDataset):
         Returns:
             int: The length of the dataset.
         """
-        return self.step_limit
+        # NOTE: this used to return self.step_limit (len - 1), which made the
+        # final scan unreachable. The dataset has 910 scans, matching Table 1
+        # of the paper; returning step_limit silently used only 909 of them.
+        return len(self.point_clouds)
 
     def __getitem__(self, idx: int) -> Tuple:
         """
